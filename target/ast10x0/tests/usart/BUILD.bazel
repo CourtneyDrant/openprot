@@ -45,7 +45,6 @@ rust_binary(
         "@pigweed//pw_kernel/subsys/console:console_backend",
         "@pigweed//pw_kernel/target:target_common",
         "@pigweed//pw_kernel/userspace",
-        "@pigweed//pw_log/rust:pw_log",
         "@rust_crates//:cortex-m-semihosting",
     ],
 )
@@ -113,6 +112,7 @@ system_image(
 system_image_test(
     name = "usart_test",
     image = ":usart",
+    tags = ["qemu_only"],
     target_compatible_with = TARGET_COMPATIBLE_WITH,
 )
 

@@ -3,8 +3,6 @@
 
 use ast1060_pac as device;
 use bitflags::bitflags;
-use core::cell::UnsafeCell;
-use core::marker::PhantomData;
 use embedded_hal_nb::serial as serial_nb;
 use embedded_io::{Read, Write};
 
@@ -102,7 +100,6 @@ bitflags! {
 }
 pub struct Usart {
 	usart: *const device::uart::RegisterBlock,
-	_not_sync: PhantomData<UnsafeCell<()>>, // makes Usart !Sync
 }
 
 impl embedded_io::ErrorType for Usart {
@@ -136,23 +133,48 @@ impl Write for Usart {
 		Ok(())
 	}
 
+	#[inline(always)]
 	fn write(&mut self, buf: &[u8]) -> Result<usize, Error> {
-		for (n, byte) in buf.iter().enumerate() {
+		let mut written = 0;
+		for byte in buf.iter() {
 			if !self.is_tx_full() {
 				// This is unsafe because we can transmit 7, 8 or 9 bits but the
 				// interface can't know what it's been configured for.
 				self.regs()
 					.uartthr()
 					.write(|w| unsafe { w.bits(*byte as u32) });
+				written += 1;
 			} else {
-				if n == 0 {
-					// spec demands to block until atleast one byte has been written
-					continue;
+				if written == 0 {
+					// spec demands to block until at least one byte has been written.
+					// `continue` would skip to the next byte rather than retrying
+					// this one, so we busy-wait inline instead.
+					while self.is_tx_full() {}
+					self.regs()
+						.uartthr()
+						.write(|w| unsafe { w.bits(*byte as u32) });
+					written += 1;
+				} else {
+					break;
 				}
-				return Ok(n);
 			}
 		}
-		Ok(buf.len())
+		// Two invariants hold that LLVM cannot prove through value range analysis
+		// due to the busy-wait inner loop and early break:
+		//
+		// 1. n <= buf.len(): `written` is incremented at most once per element of
+		//    `buf.iter()`. Without this, `write_all`'s `buf = &buf[n..]` retains
+		//    a bounds-check panic. The `min` makes the assert mathematically sound.
+		//
+		// 2. n > 0 when buf is non-empty: the busy-wait guarantees at least one
+		//    byte is written before returning. Without this, `write_all`'s
+		//    `Ok(0) => panic!` branch is retained even though it is unreachable.
+		let n = written.min(buf.len());
+		unsafe {
+			core::hint::assert_unchecked(n <= buf.len());
+			core::hint::assert_unchecked(n > 0 || buf.is_empty());
+		}
+		Ok(n)
 	}
 }
 
@@ -245,6 +267,20 @@ impl Usart {
 		}
 	}
 
+	/// Create an uninitialized USART instance without writing to registers.
+	///
+	/// This const function creates a Usart struct pointing to the register block
+	/// but does not perform any hardware initialization. Use this for static
+	/// initializers and call `new()` or follow with hardware initialization.
+	///
+	/// # Safety
+	///
+	/// - `usart` must be a valid, non-null pointer to the AST1060 UART register block.
+	/// - The pointed register block must remain valid for the lifetime of this `Usart`.
+	pub const unsafe fn new_uninit(usart: *const device::uart::RegisterBlock) -> Self {
+		Self { usart }
+	}
+
 	/// Create a new USART instance from a raw register-block pointer.
 	///
 	/// Configures RX/TX FIFO, 8 byte RX trigger level, 1.5MBaud, 8n1, and
@@ -259,7 +295,6 @@ impl Usart {
 	pub unsafe fn new(usart: *const device::uart::RegisterBlock) -> Self {
 		let this = Self {
 			usart,
-			_not_sync: PhantomData,
 		};
 
 		unsafe {
@@ -425,5 +460,16 @@ impl Usart {
 	/// Disables the RX idle interrupt (ERBFI)
 	pub fn clear_rx_data_available_interrupt(&self) {
 		self.regs().uartier().modify(|_, w| w.erbfi().clear_bit());
+	}
+
+	/// Disables all four IER interrupt sources at once.
+	pub fn disable_all_interrupts(&self) {
+		self.regs().uartier().write(|w| w);
+	}
+
+	/// Reads and discards MSR to clear the delta bits (DCTS/DDSR/TERI/DDCD)
+	/// that would otherwise keep retriggering EDSSI after enable.
+	pub fn drain_modem_status(&self) {
+		let _ = self.regs().uartmsr().read().bits();
 	}
 }

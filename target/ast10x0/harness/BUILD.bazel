@@ -1,0 +1,50 @@
+# Licensed under the Apache-2.0 license
+# SPDX-License-Identifier: Apache-2.0
+
+load("@rules_platform//platform_data:defs.bzl", "platform_data")
+load("@rules_python//python:py_binary.bzl", "py_binary")
+
+py_binary(
+    name = "qemu_runner_bin",
+    srcs = ["qemu_runner.py"],
+    main = "qemu_runner.py",
+    # @@pigweed++cipd+pigweed.qemu is the canonical label for the qemu repo
+    # created by pigweed's cipd module extension. If this breaks after a
+    # pigweed upgrade, run: bazel mod dump_repo_mapping "pigweed+" | grep qemu
+    deps = [
+        "@@pigweed++cipd+pigweed.qemu//:qemu-system-arm-runfiles",
+        "@pigweed//pw_tokenizer/py:detokenize",
+        "@rules_python//python/runfiles",
+    ],
+)
+
+platform_data(
+    name = "qemu_runner",
+    platform = "@bazel_tools//tools:host_platform",
+    target = ":qemu_runner_bin",
+    visibility = ["//visibility:public"],
+)
+
+py_binary(
+    name = "test_runner_bin",
+    srcs = [
+        "pi_test_runner.py",
+        "test_runner.py",
+    ],
+    data = ["evb_config.toml"],
+    main = "test_runner.py",
+    deps = ["@pigweed//pw_tokenizer/py:detokenize"],
+)
+
+platform_data(
+    name = "test_runner",
+    platform = "@bazel_tools//tools:host_platform",
+    target = ":test_runner_bin",
+    visibility = ["//visibility:public"],
+)
+
+exports_files([
+    "test_runner.py",
+    "pi_test_runner.py",
+    "evb_config.toml",
+])

@@ -164,7 +164,7 @@
 //! }
 //! ```
 
-use embedded_hal::i2c::{Operation, SevenBitAddress};
+use embedded_hal::i2c::{ErrorType, Operation, SevenBitAddress};
 use openprot_hal_blocking::i2c_hardware::{I2cHardwareCore, I2cMaster};
 
 /// Mock error type for I2C operations
@@ -432,8 +432,11 @@ impl Default for MockI2cHardware {
     }
 }
 
-impl I2cHardwareCore for MockI2cHardware {
+impl ErrorType for MockI2cHardware {
     type Error = MockI2cError;
+}
+
+impl I2cHardwareCore for MockI2cHardware {
     type Config = MockI2cConfig;
     type I2cSpeed = u32; // Speed in Hz
     type TimingConfig = (); // No timing config needed for mock
@@ -619,6 +622,9 @@ impl I2cHardwareCore for MockI2cHardware {
     /// let mut failing_mock = MockI2cHardware::new_failing();
     /// assert!(failing_mock.recover_bus().is_err());
     /// ```
+}
+
+impl I2cBusRecovery for MockI2cHardware {
     fn recover_bus(&mut self) -> Result<(), Self::Error> {
         self.check_success()
     }
@@ -1022,6 +1028,10 @@ where
     }
 }
 
+impl<S> ErrorType for MockI2cHardwareWithSystem<S> {
+    type Error = MockI2cError;
+}
+
 impl<S> I2cHardwareCore for MockI2cHardwareWithSystem<S>
 where
     S: openprot_hal_blocking::system_control::SystemControl<
@@ -1029,7 +1039,6 @@ where
         ResetId = crate::system_control::MockResetId,
     >,
 {
-    type Error = MockI2cError;
     type Config = MockI2cConfig;
     type I2cSpeed = u32;
     type TimingConfig = ();
@@ -1098,9 +1107,16 @@ where
         self.base_hardware.handle_interrupt();
     }
 
+}
+
+impl<S> I2cBusRecovery for MockI2cHardwareWithSystem<S>
+where
+    S: openprot_hal_blocking::system_control::SystemControl<
+        ClockId = crate::system_control::MockClockId,
+        ResetId = crate::system_control::MockResetId,
+    >,
+{
     fn recover_bus(&mut self) -> Result<(), Self::Error> {
-        // In real hardware, bus recovery might require system-level operations
-        // For now, delegate to base implementation
         self.base_hardware.recover_bus()
     }
 }

@@ -17,6 +17,11 @@ bool_flag(
     build_setting_default = False,
 )
 
+# bool_flag(
+#     name = "uart_boot_header",
+#     build_setting_default = False,
+# )
+
 config_setting(
     name = "qemu_enabled",
     flag_values = {":qemu": "true"},
@@ -37,8 +42,7 @@ platform(
     flags = flags_from_dict(
         KERNEL_DEVICE_COMMON_FLAGS | {
             "@pigweed//pw_kernel/config:kernel_config": ":config",
-            # TODO(console): replace with a real UART backend for silicon.
-            "@pigweed//pw_kernel/subsys/console:console_backend": "@pigweed//pw_kernel/subsys/console:console_backend_semihosting",
+            "@pigweed//pw_kernel/subsys/console:console_backend": ":console",
         },
     ),
     visibility = [":__subpackages__"],
@@ -54,14 +58,33 @@ constraint_value(
 )
 
 rust_library(
+    name = "console",
+    srcs = ["console_backend.rs"],
+    crate_name = "console_backend",
+    edition = "2024",
+    tags = ["kernel"],
+    target_compatible_with = TARGET_COMPATIBLE_WITH,
+    deps = [
+        "//target/ast10x0/peripherals",
+        "@ast1060_pac",
+        "@pigweed//pw_kernel/arch/arm_cortex_m:arch_arm_cortex_m",
+        "@pigweed//pw_kernel/kernel",
+        "@pigweed//pw_status/rust:pw_status",
+        "@rust_crates//:embedded-io",
+    ],
+)
+
+rust_library(
     name = "entry",
     srcs = ["entry.rs"],
     edition = "2024",
     tags = ["kernel"],
     target_compatible_with = TARGET_COMPATIBLE_WITH,
     deps = [
+        "@ast1060_pac",
         "@pigweed//pw_kernel/arch/arm_cortex_m:arch_arm_cortex_m",
         "@pigweed//pw_kernel/kernel",
+        "@pigweed//pw_status/rust:pw_status",
         "@rust_crates//:cortex-m-rt",
     ],
 )
@@ -78,6 +101,17 @@ rust_library(
     tags = ["kernel"],
     target_compatible_with = TARGET_COMPATIBLE_WITH,
     deps = ["@pigweed//pw_kernel/config:kernel_config_interface"],
+)
+
+rust_library(
+    name = "userspace_runtime",
+    srcs = ["userspace_runtime.rs"],
+    crate_name = "ast10x0_userspace_runtime",
+    edition = "2024",
+    target_compatible_with = TARGET_COMPATIBLE_WITH,
+    deps = [
+        "@pigweed//pw_log/rust:pw_log",
+    ],
 )
 
 filegroup(

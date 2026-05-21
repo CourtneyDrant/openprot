@@ -7,16 +7,137 @@
 
 use arch_arm_cortex_m::Arch;
 
+#[cfg(feature = "jtag-halt")]
+use core::ptr::{self, addr_of};
+
+#[cfg(feature = "jtag-halt")]
+/// Enable ARM JTAG pins via SCU pinmux and halt waiting for a debugger.
+///
+/// # Safety
+/// Caller must have exclusive early-boot ownership of SCU MMIO and must have
+/// already unlocked SCU write protection (write `0x1688_A8A8` to `SCU000`);
+/// otherwise the `SCU41C` pinmux write is silently dropped.
+unsafe fn jtag_init() {
+    // Enable JTAG pins via SCU pinmux - must happen very early
+    // Scu::steal() is safe here: it's a zero-sized type with no RAM allocation
+    let scu = unsafe { ast1060_pac::Scu::steal() };
+
+    // SCU41C: Multi-function Pin Control - enable ARM JTAG pins
+    scu.scu41c().modify(|_, w| {
+        w.enbl_armtmsfn_pin()
+            .bit(true)
+            .enbl_armtckfn_pin()
+            .bit(true)
+            .enbl_armtrstfn_pin()
+            .bit(true)
+            .enbl_armtdifn_pin()
+            .bit(true)
+            .enbl_armtdofn_pin()
+            .bit(true)
+    });
+
+    // Halt here waiting for JTAG debugger
+    // Break with JTAG and set HALT to 0 to continue
+    static mut HALT: u32 = 1;
+    loop {
+        let val = unsafe { ptr::read_volatile(addr_of!(HALT)) };
+        if val == 0 {
+            break;
+        }
+    }
+}
+/// Configure and enable the AST10x0 instruction/data cache.
+///
+/// Sequence: disable cache, program the cacheable area, invalidate, re-enable.
+///
+/// # Safety
+/// Caller must have exclusive early-boot ownership of SCU MMIO and must have
+/// already unlocked SCU write protection.
+unsafe fn init_cache() {
+    // SAFETY: see function-level safety contract.
+    let scu = unsafe { &*ast1060_pac::Scu::ptr() };
+
+    // Disable cache.
+    scu.scua58().write(|w| unsafe { w.bits(0) });
+
+    // Configure cache area.
+    scu.scua50().write(|w| unsafe { w.bits(0x000f_ffff) });
+
+    // Invalidate cache.
+    scu.scua54().write(|w| unsafe { w.bits(0x8660_0000) });
+
+    // Re-enable cache.
+    scu.scua58().write(|w| unsafe { w.bits(1) });
+}
+
+// Pre-kernel hardware initialization
+/// Runs before RAM is initialized, before main()
+#[cortex_m_rt::pre_init]
+unsafe fn pre_init() {
+    // SAFETY: pre-init has exclusive early-boot ownership of SCU MMIO.
+    let scu = unsafe { &*ast1060_pac::Scu::ptr() };
+
+    // Unlock SCU write-protected registers.
+    scu.scu000().write(|w| unsafe { w.bits(0x1688_A8A8) });
+
+    #[cfg(feature = "jtag-halt")]
+    jtag_init();
+
+    // SAFETY: SCU is unlocked above; pre-init has exclusive ownership.
+    unsafe { init_cache() };
+}
+
+
+
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
 pub extern "C" fn pw_assert_HandleFailure() -> ! {
     use kernel::Arch as _;
-    Arch::panic()
+    Arch::panic();
+}
+
+// ── Interrupt Handler Stubs ──
+// These are required by the ast1060-pac's __INTERRUPTS vector table.
+
+macro_rules! default_handler {
+    ($($name:ident),*) => {
+        $(
+            #[unsafe(no_mangle)]
+            pub extern "C" fn $name() {
+                // Default: infinite loop
+                loop {}
+            }
+        )*
+    };
+}
+
+// Default stub handlers for peripherals not yet implemented
+default_handler!(
+    fmc, gpio, hace,
+    i2c, i2c1, i2c2, i2c3, i2c4, i2c5, i2c6, i2c7, i2c8, i2c9, i2c10, i2c11, i2c12, i2c13,
+    i2cfilter,
+    i3c, i3c1, i3c2, i3c3,
+    scu, sgpiom,
+    spi, spi1, spipf1, spipf2, spipf3,
+    timer1, timer2, timer3, timer4, timer5, timer6, timer7,
+    uart, uartdma, wdt
+);
+
+mod console_backend {
+    unsafe extern "Rust" {
+        pub fn console_backend_write_all(buf: &[u8]) -> pw_status::Result<()>;
+    }
 }
 
 #[cortex_m_rt::entry]
 fn main() -> ! {
     kernel::static_init_state!(static mut INIT_STATE: InitKernelState<Arch>);
     #[allow(static_mut_refs)]
-    kernel::main(Arch, unsafe { &mut INIT_STATE });
+    unsafe {
+        // Initialize UART console
+        let _ = console_backend::console_backend_write_all(b"\r\nHello World!\r\n");
+        let _ = console_backend::console_backend_write_all(b"ast1060 pigweed fw is running!\r\n");
+
+        kernel::main(Arch, &mut INIT_STATE)
+    };
 }

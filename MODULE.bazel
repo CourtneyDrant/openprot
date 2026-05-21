@@ -9,8 +9,8 @@ module(
 bazel_dep(name = "bazel_skylib", version = "1.8.2")
 bazel_dep(name = "pigweed")
 bazel_dep(name = "platforms", version = "1.0.0")
-bazel_dep(name = "rules_rust", version = "0.68.1")
-bazel_dep(name = "rules_rust_mdbook", version = "0.68.1")
+bazel_dep(name = "rules_rust", version = "0.70.0")
+bazel_dep(name = "rules_rust_mdbook", version = "0.70.0")
 bazel_dep(name = "rules_platform", version = "0.1.0")
 bazel_dep(name = "rules_python", version = "1.8.3")
 bazel_dep(name = "ureg")
@@ -27,13 +27,14 @@ local_path_override(
 
 git_override(
     module_name = "pigweed",
-    commit = "67563b40f2c19aec4f899afd13c00e48baf790b2",
+    commit = "7882c537d21171b0e9641a132842a373382a78c3",
     patch_args = ["-p1"],
     patches = [
-        "//third_party/pigweed:veer_pic_generic_type.patch",
         # Allow integration_tests to build for armv7-m / armv7e-m so the
         # AST10x0 unittest_runner can use it.
         "//third_party/pigweed:integration_tests_armv7m.patch",
+        # Stage .bin alongside .elf in system_image_test runfiles.
+        "//third_party/pigweed:system_image_test_bin_runfiles.patch",
     ],
     remote = "https://pigweed.googlesource.com/pigweed/pigweed",
 )
@@ -121,15 +122,16 @@ caliptra_repos_ext = use_extension(
 )
 use_repo(caliptra_repos_ext, "caliptra_mcu_sw", "caliptra_sw")
 
-ast1060_pac_repos_ext = use_extension(
-    "//third_party/ast1060-pac:extensions.bzl",
-    "ast1060_pac_repos",
-)
-use_repo(ast1060_pac_repos_ext, "ast1060_pac")
-
 nonhermetic_repo = use_repo_rule("//target/earlgrey/tooling/signing:nonhermetic.bzl", "nonhermetic_repo")
 
 nonhermetic_repo(name = "nonhermetic")
+
+# ── AST1060 Peripheral Access Crate (svd2rust-generated) ──
+ast1060_pac_ext = use_extension(
+    "//third_party:ast1060_pac.bzl",
+    "ast1060_pac_ext",
+)
+use_repo(ast1060_pac_ext, "ast1060_pac", "vcell")
 
 hsm = use_extension("//third_party/hsm:extensions.bzl", "hsm")
 use_repo(hsm, "cloud_kms_hsm")

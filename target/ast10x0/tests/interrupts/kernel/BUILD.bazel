@@ -67,6 +67,5 @@ rust_binary(
         "@pigweed//pw_kernel/tests/interrupts/kernel:test_interrupts",
         "@pigweed//pw_log/rust:pw_log",
         "@pigweed//pw_status/rust:pw_status",
-        "@rust_crates//:cortex-m-semihosting",
     ],
 )
