@@ -58,7 +58,6 @@ spdm-lib = { git = "https://github.com/OpenPRoT/spdm-lib.git", branch = "main" }
 =======
 mctp = { git = "https://github.com/CodeConstruct/mctp-rs.git", default-features = false }
 mctp-lib = { git = "https://github.com/OpenPRoT/mctp-lib.git", branch = "9e-buildup", default-features = false }
-nb = "1.0"
 pldm-common = { path = "/home/coudrant/pldm-lib/pldm-common" }
 pldm-interface = { path = "/home/coudrant/pldm-lib/pldm-interface" }
 # Pin to match Hubris ecosystem
