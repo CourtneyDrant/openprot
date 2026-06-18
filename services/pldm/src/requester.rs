@@ -22,13 +22,9 @@
 //! [`PldmResponder`]: crate::responder::PldmResponder
 
 use openprot_mctp_api::MctpClient;
-use pldm_common::codec::PldmCodec;
-use pldm_common::message::control::{GetTidRequest, GetTidResponse};
-use pldm_common::protocol::base::{PldmBaseCompletionCode, PldmMsgType};
-use pldm_interface::control_context::ProtocolCapability;
-use pldm_interface::error::MsgHandlerError;
 
 use crate::error::PldmServiceError;
+use crate::firmware_device::FdReqChannel;
 use crate::transport::MctpPldmTransport;
 
 /// One outbound requester command to send on the next [`PldmRequester::run_once`].
@@ -73,6 +69,7 @@ pub enum PldmRequesterCommand {
 /// ```
 ///
 /// [`PldmResponder`]: crate::responder::PldmResponder
+#[allow(dead_code)]
 pub struct PldmRequester {
     /// Instance ID stamped into the next outgoing request header.  Incremented
     /// (with wraparound) after each completed exchange so successive requests
@@ -90,106 +87,51 @@ impl PldmRequester {
     /// [`PldmResponder::new`] and future expansion.
     ///
     /// [`PldmResponder::new`]: crate::responder::PldmResponder::new
-    pub fn new(_protocol_capabilities: &[ProtocolCapability]) -> Self {
+    pub fn new() -> Self {
         PldmRequester {
             instance_id: 0,
             pending_command: None,
         }
     }
-
-    /// Queue a requester command for the next [`run_once`](Self::run_once).
-    pub fn queue_command(&mut self, command: PldmRequesterCommand) {
-        self.pending_command = Some(command);
-    }
-
-    /// Convenience helper that queues a PLDM Base `GetTID` request.
-    pub fn queue_get_tid(&mut self) {
-        self.queue_command(PldmRequesterCommand::GetTid);
-    }
-
-    /// Execute one queued request/response cycle.
+    
+    /// Run a blocking loop that forwards raw PLDM requests from
+    /// [`FirmwareDevice`] over MCTP and returns the responses.
     ///
-    /// If no command is queued, this method returns `Ok(())` and does not
-    /// touch the transport.
+    /// On each iteration:
+    /// 1. Receives a framed PLDM request from `fd_req` (`buf[0]` = MCTP type,
+    ///    `buf[1..]` = PLDM bytes).
+    /// 2. Forwards it to `remote_eid` via `transport` and receives the
+    ///    response into `buf[1..]`.
+    /// 3. Responds to `fd_req` with `buf[0..1+pldm_resp_len]`.
     ///
-    /// `buf` must be large enough to hold the 1-byte MCTP message-type prefix
-    /// plus the largest PLDM message expected.  Byte 0 is reserved for that
-    /// prefix; the PLDM payload occupies `buf[1..]`.
+    /// A `timeout_millis` of `0` blocks indefinitely on each MCTP exchange.
     ///
-    /// A `timeout_millis` of `0` blocks indefinitely.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PldmServiceError::MsgHandler`] if the request cannot be
-    /// encoded, the response cannot be decoded, or the responder reports a
-    /// non-success completion code.
-    /// Returns [`PldmServiceError::Mctp`] on any transport error (e.g.
-    /// timeout, channel exhausted).
-    /// Returns [`PldmServiceError::Overflow`] if `buf` is too small.
-    pub fn run_once<C: MctpClient>(
+    /// [`FirmwareDevice`]: crate::firmware_device::FirmwareDevice
+    pub fn run_requester<C: MctpClient>(
         &mut self,
+        fd_req: &impl FdReqChannel,
         transport: &MctpPldmTransport<C>,
         remote_eid: u8,
         buf: &mut [u8],
         timeout_millis: u32,
     ) -> Result<(), PldmServiceError> {
-        let Some(command) = self.pending_command else {
-            return Ok(());
-        };
+        loop {
+            // Receive raw PLDM request from FirmwareDevice.
+            // buf[0] = MCTP framing byte (0x01), buf[1..msg_len] = PLDM bytes.
+            let msg_len = fd_req.recv(buf)?;
+            let pldm_len = msg_len
+                .checked_sub(1)
+                .ok_or(PldmServiceError::Overflow)?;
 
-        let result = match command {
-            PldmRequesterCommand::GetTid => {
-                self.run_get_tid_once(transport, remote_eid, buf, timeout_millis)
-            }
-        };
+            // Forward over MCTP; response lands in buf[1..1+pldm_resp_len].
+            let pldm_resp_len =
+                transport.send_request(remote_eid, pldm_len, buf, timeout_millis)?;
+            let resp_total_len = pldm_resp_len
+                .checked_add(1)
+                .ok_or(PldmServiceError::Overflow)?;
 
-        if result.is_ok() {
-            self.pending_command = None;
+            // Return the framed response to FirmwareDevice.
+            fd_req.respond(buf.get(..resp_total_len).ok_or(PldmServiceError::Overflow)?)?;
         }
-
-        result
-    }
-
-    fn run_get_tid_once<C: MctpClient>(
-        &mut self,
-        transport: &MctpPldmTransport<C>,
-        remote_eid: u8,
-        buf: &mut [u8],
-        timeout_millis: u32,
-    ) -> Result<(), PldmServiceError> {
-        // Step 1 – encode the GetTID request into buf[1..]; buf[0] is reserved
-        // for the MCTP framing byte that send_request stamps.
-        let request = GetTidRequest::new(self.instance_id, PldmMsgType::Request);
-        let pldm_req_len = {
-            let pldm_buf = buf.get_mut(1..).ok_or(PldmServiceError::Overflow)?;
-            request
-                .encode(pldm_buf)
-                .map_err(|e| PldmServiceError::MsgHandler(MsgHandlerError::Codec(e)))?
-        };
-
-        // Step 2 – send the request and receive the response into buf[1..].
-        let pldm_resp_len =
-            transport.send_request(remote_eid, pldm_req_len, buf, timeout_millis)?;
-
-        // Step 3 – decode and validate the response.
-        let resp_end = pldm_resp_len
-            .checked_add(1)
-            .ok_or(PldmServiceError::Overflow)?;
-        let resp_buf = buf.get(1..resp_end).ok_or(PldmServiceError::Overflow)?;
-        let response = GetTidResponse::decode(resp_buf)
-            .map_err(|e| PldmServiceError::MsgHandler(MsgHandlerError::Codec(e)))?;
-
-        // Copy out of the packed response before comparing.
-        let completion_code = response.completion_code;
-        if completion_code != PldmBaseCompletionCode::Success as u8 {
-            return Err(PldmServiceError::MsgHandler(
-                MsgHandlerError::FdInitiatorModeError,
-            ));
-        }
-
-        // Advance the instance ID for the next exchange.
-        self.instance_id = self.instance_id.wrapping_add(1);
-
-        Ok(())
     }
 }

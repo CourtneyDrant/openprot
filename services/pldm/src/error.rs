@@ -15,6 +15,8 @@ pub enum PldmServiceError {
     MsgHandler(MsgHandlerError),
     /// A buffer size or arithmetic overflow.
     Overflow,
+    /// An IPC channel error (read, respond, or transact failure).
+    Ipc,
 }
 
 impl From<MctpError> for PldmServiceError {

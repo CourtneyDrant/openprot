@@ -74,6 +74,7 @@
 #![warn(missing_docs)]
 
 pub mod error;
+pub mod firmware_device;
 pub mod requester;
 pub mod responder;
 pub mod transport;
