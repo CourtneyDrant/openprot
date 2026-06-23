@@ -1356,6 +1356,7 @@ dependencies = [
  "sha2",
  "sha3",
  "smlang",
+ "spdm-lib",
  "subtle",
  "syn 1.0.109",
  "syn 2.0.118",
@@ -1577,6 +1578,15 @@ checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
 dependencies = [
  "libc",
  "windows-sys",
+]
+
+[[package]]
+name = "spdm-lib"
+version = "0.1.0"
+source = "git+https://github.com/OpenPRoT/spdm-lib.git?branch=main#41d81717f5d2b4d6b004819a829ae015e44febce"
+dependencies = [
+ "bitfield 0.14.0",
+ "zerocopy",
 ]
 
 [[package]]
