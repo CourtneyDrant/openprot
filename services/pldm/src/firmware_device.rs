@@ -13,7 +13,7 @@
 //!   `RequestFirmwareData`) to the `pldm_requester` process and receives the
 //!   UA response.
 //!
-//! The two IPC ends are abstracted via the [`FdRspChannel`] and [`FwReqChannel`]
+//! The two IPC ends are abstracted via the [`FdUaRspChannel`] and [`FdUaCmdChannel`]
 //! traits so that the service crate remains independent of the Hubris / Pigweed
 //! IPC codegen.
 //!
@@ -53,9 +53,9 @@ pub const FD_IPC_MAX_MSG: usize = 1024;
 /// Server-side channel for receiving PLDM firmware-device commands and sending
 /// responses back to the caller.
 ///
-/// Implemented by platform-specific IPC glue (e.g. `IpcFdRspChannel` in
+/// Implemented by platform-specific IPC glue (e.g. `IpcFdUaRspChannel` in
 /// `openprot-pldm-firmware-device-ipc`).
-pub trait FdRspChannel {
+pub trait FdUaRspChannel {
     /// Receive one incoming PLDM message into `buf`.
     ///
     /// Returns the number of bytes written.  `timeout_millis` of `0` blocks
@@ -69,15 +69,15 @@ pub trait FdRspChannel {
 /// Server-side channel used by [`PldmRequester`] to receive raw PLDM requests
 /// forwarded by [`FirmwareDevice`] and send the MCTP response back.
 ///
-/// This is the counterpart of [`FwReqChannel`]: `FirmwareDevice` calls
-/// `FwReqChannel::transact`; the `pldm_requester` process implements
-/// `FdReqChannel` on the other end of that same IPC connection.
+/// This is the counterpart of [`FdUaCmdChannel`]: `FirmwareDevice` calls
+/// `FdUaCmdChannel::transact`; the `pldm_requester` process implements
+/// `UaFdRspChannel` on the other end of that same IPC connection.
 ///
-/// Implemented by platform-specific IPC glue (e.g. `IpcFdReqChannel` in
+/// Implemented by platform-specific IPC glue (e.g. `IpcUaFdRspChannel` in
 /// `openprot-pldm-firmware-device-ipc`).
 ///
 /// [`PldmRequester`]: crate::requester::PldmRequester
-pub trait FdReqChannel {
+pub trait UaFdRspChannel {
     /// Receive one raw PLDM request from [`FirmwareDevice`].
     ///
     /// `buf[0]` will be the MCTP message-type byte (`0x01`); `buf[1..]`
@@ -95,9 +95,9 @@ pub trait FdReqChannel {
 /// Client-side channel for sending PLDM firmware-update requests to the Update
 /// Agent and receiving its responses.
 ///
-/// Implemented by platform-specific IPC glue (e.g. `IpcFwReqChannel` in
+/// Implemented by platform-specific IPC glue (e.g. `IpcFdUaCmdChannel` in
 /// `openprot-pldm-firmware-device-ipc`).
-pub trait FwReqChannel {
+pub trait FdUaCmdChannel {
     /// Perform a synchronous request/response round-trip.
     ///
     /// Sends `req` and blocks until the response arrives, writing it into
@@ -108,13 +108,13 @@ pub trait FwReqChannel {
 /// Client-side channel for sending PLDM firmware-command requests to the Firmware
 /// Device and receiving its responses.
 ///
-/// This is the counterpart of [`FdRspChannel`]: `PldmResponder` calls
-/// `FdCmdChannel::transact`; `FirmwareDevice` implements `FdRspChannel` on
+/// This is the counterpart of [`FdUaRspChannel`]: `PldmResponder` calls
+/// `UaFdCmdChannel::transact`; `FirmwareDevice` implements `FdUaRspChannel` on
 /// the other end of that same IPC connection.
 ///
-/// Implemented by platform-specific IPC glue (e.g. `IpcFdCmdChannel` in
+/// Implemented by platform-specific IPC glue (e.g. `IpcUaFdCmdChannel` in
 /// `openprot-pldm-firmware-device-ipc`).
-pub trait FdCmdChannel {
+pub trait UaFdCmdChannel {
     /// Perform a synchronous request/response round-trip.
     ///
     /// Sends `req` and blocks until the response arrives, writing it into
@@ -144,8 +144,8 @@ impl<'a> FirmwareDevice<'a> {
     #[allow(missing_docs)]
     pub fn run_terminus(
         &mut self,
-        fd_rsp: &impl FdRspChannel,
-        fw_req: &impl FwReqChannel,
+        fd_rsp: &impl FdUaRspChannel,
+        fw_req: &impl FdUaCmdChannel,
         buf: &mut [u8],
         timeout_millis: u32,
     ) -> Result<(), PldmServiceError> {

@@ -4,22 +4,22 @@
 //! Pigweed IPC channel implementations for [`FirmwareDevice`].
 //!
 //! Provides:
-//! * [`IpcFdRspChannel`] – server-side channel that receives firmware-device
+//! * [`IpcFdUaRspChannel`] – server-side channel that receives firmware-device
 //!   commands via `channel_read` and responds via `channel_respond`.
-//! * [`IpcFwReqChannel`] – client-side channel that performs a synchronous
+//! * [`IpcFdUaCmdChannel`] – client-side channel that performs a synchronous
 //!   firmware-update request/response round-trip via `channel_transact`.
-//! * [`IpcFdReqChannel`] – server-side channel used by `PldmRequester` to
+//! * [`IpcUaFdRspChannel`] – server-side channel used by `PldmRequester` to
 //!   receive forwarded PLDM requests from `FirmwareDevice` and respond with
 //!   the MCTP result.
 //!
 //! ## Usage
 //!
 //! ```rust,ignore
-//! use openprot_pldm_firmware_device_ipc::{IpcFdRspChannel, IpcFwReqChannel};
+//! use openprot_pldm_firmware_device_ipc::{IpcFdUaRspChannel, IpcFdUaCmdChannel};
 //! use openprot_pldm_service::firmware_device::FirmwareDevice;
 //!
-//! let fd_channel = IpcFdRspChannel::new(handle::FD_CMD);
-//! let fw_channel = IpcFwReqChannel::new(handle::FW_REQ);
+//! let fd_channel = IpcFdUaRspChannel::new(handle::FD_CMD);
+//! let fw_channel = IpcFdUaCmdChannel::new(handle::FW_REQ);
 //! let mut fd = FirmwareDevice::new(&PROTOCOL_CAPS);
 //! let mut buf = [0u8; openprot_pldm_service::firmware_device::FD_IPC_MAX_MSG];
 //! loop {
@@ -33,22 +33,22 @@
 #![warn(missing_docs)]
 
 use openprot_pldm_service::error::PldmServiceError;
-use openprot_pldm_service::firmware_device::{FdReqChannel, FdRspChannel, FwReqChannel};
+use openprot_pldm_service::firmware_device::{UaFdRspChannel, FdUaRspChannel, FdUaCmdChannel};
 use userspace::time::Instant;
 
 /// IPC server-side channel for receiving PLDM firmware-device commands.
 ///
-/// Wraps a Pigweed IPC channel handle.  Each call to [`FdRspChannel::recv`]
-/// reads one incoming request with `channel_read`; [`FdRspChannel::respond`]
+/// Wraps a Pigweed IPC channel handle.  Each call to [`FdUaRspChannel::recv`]
+/// reads one incoming request with `channel_read`; [`FdUaRspChannel::respond`]
 /// sends the response with `channel_respond`.
 ///
 /// The handle comes from the application's generated `handle` module
 /// (e.g. `handle::FD_CMD`).
-pub struct IpcFdRspChannel {
+pub struct IpcFdUaRspChannel {
     handle: u32,
 }
 
-impl IpcFdRspChannel {
+impl IpcFdUaRspChannel {
     /// Create a new channel bound to `handle`.
     pub fn new(handle: u32) -> Self {
         Self { handle }
@@ -60,7 +60,7 @@ impl IpcFdRspChannel {
     }
 }
 
-impl FdRspChannel for IpcFdRspChannel {
+impl FdUaRspChannel for IpcFdUaRspChannel {
     fn recv(&self, buf: &mut [u8], _timeout_millis: u32) -> Result<usize, PldmServiceError> {
         userspace::syscall::channel_read(self.handle, 0, buf)
             .map_err(|_| PldmServiceError::Ipc)
@@ -74,17 +74,17 @@ impl FdRspChannel for IpcFdRspChannel {
 
 /// IPC client-side channel for sending PLDM firmware-update requests.
 ///
-/// Wraps a Pigweed IPC channel handle.  Each call to [`FwReqChannel::transact`]
+/// Wraps a Pigweed IPC channel handle.  Each call to [`FdUaCmdChannel::transact`]
 /// performs one synchronous `channel_transact`, blocking until the response
 /// arrives.
 ///
 /// The handle comes from the application's generated `handle` module
 /// (e.g. `handle::FW_REQ`).
-pub struct IpcFwReqChannel {
+pub struct IpcFdUaCmdChannel {
     handle: u32,
 }
 
-impl IpcFwReqChannel {
+impl IpcFdUaCmdChannel {
     /// Create a new channel bound to `handle`.
     pub fn new(handle: u32) -> Self {
         Self { handle }
@@ -96,7 +96,7 @@ impl IpcFwReqChannel {
     }
 }
 
-impl FwReqChannel for IpcFwReqChannel {
+impl FdUaCmdChannel for IpcFdUaCmdChannel {
     fn transact(&self, req: &[u8], resp: &mut [u8]) -> Result<usize, PldmServiceError> {
         userspace::syscall::channel_transact(self.handle, req, resp, Instant::MAX)
             .map_err(|_| PldmServiceError::Ipc)
@@ -105,17 +105,17 @@ impl FwReqChannel for IpcFwReqChannel {
 
 /// IPC client-side channel for sending PLDM firmware-command requests.
 ///
-/// Wraps a Pigweed IPC channel handle.  Each call to [`FdReqChannel::transact`]
+/// Wraps a Pigweed IPC channel handle.  Each call to [`UaFdRspChannel::transact`]
 /// performs one synchronous `channel_transact`, blocking until the response
 /// arrives.
 ///
 /// The handle comes from the application's generated `handle` module
 /// (e.g. `handle::FW_REQ`).
-pub struct IpcFdReqChannel {
+pub struct IpcUaFdRspChannel {
     handle: u32,
 }
 
-impl IpcFdReqChannel {
+impl IpcUaFdRspChannel {
     /// Create a new channel bound to `handle`.
     pub fn new(handle: u32) -> Self {
         Self { handle }
@@ -127,7 +127,7 @@ impl IpcFdReqChannel {
     }
 }
 
-impl FdReqChannel for IpcFdReqChannel {
+impl UaFdRspChannel for IpcUaFdRspChannel {
     fn transact(&self, req: &[u8], resp: &mut [u8]) -> Result<usize, PldmServiceError> {
         userspace::syscall::channel_transact(self.handle, req, resp, Instant::MAX)
             .map_err(|_| PldmServiceError::Ipc)
@@ -137,8 +137,8 @@ impl FdReqChannel for IpcFdReqChannel {
 /// IPC server-side channel used by [`PldmRequester`] to receive forwarded
 /// PLDM requests from [`FirmwareDevice`] and respond with the MCTP result.
 ///
-/// Wraps a Pigweed IPC channel handle.  Each call to [`FdReqChannel::recv`]
-/// reads one incoming request with `channel_read`; [`FdReqChannel::respond`]
+/// Wraps a Pigweed IPC channel handle.  Each call to [`UaFdRspChannel::recv`]
+/// reads one incoming request with `channel_read`; [`UaFdRspChannel::respond`]
 /// sends the response with `channel_respond`.
 ///
 /// The handle comes from the application's generated `handle` module
@@ -146,11 +146,11 @@ impl FdReqChannel for IpcFdReqChannel {
 ///
 /// [`PldmRequester`]: openprot_pldm_service::requester::PldmRequester
 /// [`FirmwareDevice`]: openprot_pldm_service::firmware_device::FirmwareDevice
-pub struct IpcFdReqChannel {
+pub struct IpcUaFdRspChannel {
     handle: u32,
 }
 
-impl IpcFdReqChannel {
+impl IpcUaFdRspChannel {
     /// Create a new channel bound to `handle`.
     pub fn new(handle: u32) -> Self {
         Self { handle }
@@ -162,7 +162,7 @@ impl IpcFdReqChannel {
     }
 }
 
-impl FdReqChannel for IpcFdReqChannel {
+impl UaFdRspChannel for IpcUaFdRspChannel {
     fn recv(&self, buf: &mut [u8]) -> Result<usize, PldmServiceError> {
         userspace::syscall::channel_read(self.handle, 0, buf)
             .map_err(|_| PldmServiceError::Ipc)

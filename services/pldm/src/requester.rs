@@ -24,7 +24,7 @@
 use openprot_mctp_api::MctpClient;
 
 use crate::error::PldmServiceError;
-use crate::firmware_device::FdReqChannel;
+use crate::firmware_device::UaFdRspChannel;
 use crate::transport::MctpPldmTransport;
 
 /// One outbound requester command to send on the next [`PldmRequester::run_once`].
@@ -109,7 +109,7 @@ impl PldmRequester {
     /// [`FirmwareDevice`]: crate::firmware_device::FirmwareDevice
     pub fn run_requester<C: MctpClient>(
         &mut self,
-        fd_req: &impl FdReqChannel,
+        fd_req: &impl UaFdRspChannel,
         transport: &MctpPldmTransport<C>,
         remote_eid: u8,
         buf: &mut [u8],
