@@ -104,9 +104,10 @@ impl FdEventSink for () {
 
 /// Outcome of [`FirmwareDevice::run_terminus`].
 pub enum RunTerminusResult {
-    /// The loop exited normally (currently unreachable: `run_terminus` only
-    /// returns via an error today, but this variant exists so a future,
-    /// well-defined completion condition does not require an API change).
+    /// The update session ended: the FD left update mode and is `Idle`
+    /// again, either because the Update Agent activated the new firmware or
+    /// because it cancelled. A device that serves more than one update calls
+    /// [`run_terminus`](FirmwareDevice::run_terminus) again.
     Completed,
     /// The loop was stopped by an unrecoverable error.
     StoppedByError(PldmServiceError),
@@ -177,7 +178,9 @@ impl<'a, O: FdOps, Cr: MctpClient, Cq: MctpClient> FirmwareDevice<'a, O, Cr, Cq>
     /// listener is bound, silently dropping any Update Agent command that
     /// arrives in that window.
     ///
-    /// This method loops indefinitely and returns only on error.
+    /// This method loops until the FD leaves update mode — the `Idle` the
+    /// Update Agent's `ActivateFirmware` or cancel returns it to — or an
+    /// error stops it.
     /// A `timeout_millis` of `0` blocks indefinitely while idle.
     ///
     /// `requester_timeout_millis` bounds how long each `send_request` call
@@ -239,10 +242,8 @@ impl<'a, O: FdOps, Cr: MctpClient, Cq: MctpClient> FirmwareDevice<'a, O, Cr, Cq>
             // such as CancelUpdate is serviced between every RequestFirmwareData.
             let initiator_active = self.cmd_interface.fd_ctx.should_start_initiator_mode();
             if initiator_active
-                && let Some(pldm_len) = self
-                    .cmd_interface
-                    .generate_initiator_request(&mut fw_buf)
-                    .map_err(PldmServiceError::MsgHandler)?
+                && let Some(pldm_len) =
+                    self.cmd_interface.generate_initiator_request(&mut fw_buf)?
             {
                 let resp_len = self.requester_transport.send_request(
                     remote_eid,
@@ -256,9 +257,7 @@ impl<'a, O: FdOps, Cr: MctpClient, Cq: MctpClient> FirmwareDevice<'a, O, Cr, Cq>
                 let resp = fw_buf
                     .get_mut(..resp_total_len)
                     .ok_or(PldmServiceError::PldmMem(PldmMemError::BufferTooSmall))?;
-                self.cmd_interface
-                    .process_initiator_response(resp)
-                    .map_err(PldmServiceError::MsgHandler)?;
+                self.cmd_interface.process_initiator_response(resp)?;
             }
 
             // Phase 2: poll for an inbound command so the responder path
@@ -287,14 +286,18 @@ impl<'a, O: FdOps, Cr: MctpClient, Cq: MctpClient> FirmwareDevice<'a, O, Cr, Cq>
                     if source_eid != remote_eid {
                         return Ok(0);
                     }
-                    self.cmd_interface
-                        .handle_responder_msg(framed_buf)
-                        .map_err(PldmServiceError::MsgHandler)
+                    Ok(self.cmd_interface.handle_responder_msg(framed_buf)?)
                 },
             ) {
                 Ok(()) => {
-                    if !was_update_mode && self.cmd_interface.fd_ctx.is_update_mode() {
+                    let is_update_mode = self.cmd_interface.fd_ctx.is_update_mode();
+                    if !was_update_mode && is_update_mode {
                         sink.notify(FdEvent::UpdateRequested);
+                    }
+                    // The true→false edge is the end of the session: the FD
+                    // answered ActivateFirmware (or a cancel) and is Idle.
+                    if was_update_mode && !is_update_mode {
+                        return Ok(());
                     }
                 }
                 // A short poll timeout while an initiator request is active

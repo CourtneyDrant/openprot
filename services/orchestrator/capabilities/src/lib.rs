@@ -22,10 +22,26 @@
 //! the chunked read seam staging pulls from — transports and slot
 //! bookkeeping stay behind the adapter.
 //!
-//! `TrialBoot` is the commit gate activation leaves open, whether `Updatable`
-//! did the activating or a PLDM firmware device did it for the eRoT: keep the
-//! activated image once its boot was judged, or drop it. It sits on every
-//! device whose slots the eRoT drives, the eRoT's own image included.
+//! `DeviceTrialBoot` is the commit gate activation leaves open, whether
+//! `Updatable` did the activating or a PLDM firmware device did it for the
+//! eRoT: keep the
+//! activated image once its boot was judged, or drop it. It sits on the
+//! downstream devices whose slots the eRoT drives, where the eRoT watches the
+//! boot and decides within one of its own lifetimes.
+//!
+//! `SelfUpdate` is the same gate for the eRoT's own image, where the judging
+//! outlives the judge: the eRoT resets into the candidate, so the verdict is
+//! reached by a boot that has to read what the previous one left behind. It is
+//! one durable session, one at a time, carrying the state and the verified SVN
+//! together, so the next boot can tell a session that was never armed from a
+//! confirmed trial whose floor advance had not run yet. Downstream devices
+//! need no session: a reset loses the observation that would judge them, so
+//! abandoning at boot gets the same result with no storage.
+//!
+//! `Progress` is the byte count every polled seam reports: staging and
+//! verification both answer with `written` out of `total`, so one stall
+//! rule covers both, and it matches the intake seam's wire form field
+//! for field.
 //!
 //! `IncrementalVerifier` is the polled verification seam: `start`
 //! consumes the verifier into a `VerifySession` whose `poll` does one
@@ -53,20 +69,24 @@
 
 mod boot_control;
 mod boot_watch;
+mod device_trial_boot;
 mod evidence;
 mod incremental_verifier;
 mod lockdown_latch;
+mod progress;
 mod recovery;
+mod self_update;
 mod svn_floor;
-mod trial_boot;
 mod updatable;
 
 pub use boot_control::BootControl;
 pub use boot_watch::{BootWatch, FailureCause, WalkVerdict};
+pub use device_trial_boot::DeviceTrialBoot;
 pub use evidence::{BootStatus, EvidenceReader};
 pub use incremental_verifier::{IncrementalVerifier, PollOutcome, VerifySession};
 pub use lockdown_latch::LockdownLatch;
+pub use progress::Progress;
 pub use recovery::{Recovery, RestoreOutcome};
+pub use self_update::{trial_outcome, RunningImage, SelfUpdate, SelfUpdateState, TrialOutcome};
 pub use svn_floor::{Svn, SvnFloor};
-pub use trial_boot::TrialBoot;
 pub use updatable::{PayloadReadError, PayloadSource, StageProgress, Updatable, UpdateError};

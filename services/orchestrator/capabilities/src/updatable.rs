@@ -3,6 +3,8 @@
 
 //! The [`Updatable`] update capability contract.
 
+use crate::Progress;
+
 /// Update capability: stage a payload on one managed device and mark the
 /// staged image as its boot candidate.
 ///
@@ -117,17 +119,11 @@ pub trait Updatable {
 /// breaking change, so every consumer handles it explicitly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StageProgress {
-    /// Transfer ongoing; poll again. `written`/`total` bytes feed the Update
-    /// Source's progress report.
-    Transferring {
-        /// Bytes written to the device so far. Monotonic and below `total`,
-        /// but free to hold still across calls (busy device,
-        /// retransmit); a caller deciding when a transfer has stalled
-        /// keys on this value.
-        written: u64,
-        /// Total payload bytes.
-        total: u64,
-    },
+    /// Transfer ongoing; poll again. The byte counts feed the Update
+    /// Source's progress report. `written` is bytes written to the device,
+    /// free to hold still across calls (busy device, retransmit); a
+    /// caller deciding when a transfer has stalled keys on that value.
+    Transferring { progress: Progress },
     /// The device holds the complete, verified payload; `activate` may
     /// be called.
     Ready,
@@ -183,6 +179,12 @@ impl core::error::Error for UpdateError {
             | UpdateError::EmptyPayload
             | UpdateError::NothingStaged => None,
         }
+    }
+}
+
+impl From<PayloadReadError> for UpdateError {
+    fn from(e: PayloadReadError) -> Self {
+        Self::Payload(e)
     }
 }
 
@@ -313,8 +315,10 @@ mod tests {
                 Ok(StageProgress::Ready)
             } else {
                 Ok(StageProgress::Transferring {
-                    written: self.count as u64,
-                    total: total as u64,
+                    progress: Progress {
+                        written: self.count as u64,
+                        total: total as u64,
+                    },
                 })
             }
         }
@@ -365,8 +369,10 @@ mod tests {
             assert_eq!(
                 dev.poll_stage(&payload),
                 Ok(StageProgress::Transferring {
-                    written: pulled,
-                    total: payload.len(),
+                    progress: Progress {
+                        written: pulled,
+                        total: payload.len()
+                    }
                 })
             );
             pulled += MOCK_STEP as u64;
@@ -416,8 +422,10 @@ mod tests {
         assert_eq!(
             dev.poll_stage(&payload),
             Ok(StageProgress::Transferring {
-                written: MOCK_STEP as u64,
-                total: payload.len(),
+                progress: Progress {
+                    written: MOCK_STEP as u64,
+                    total: payload.len()
+                }
             })
         );
     }
@@ -452,8 +460,10 @@ mod tests {
                 self.busy = !self.busy;
                 if self.busy {
                     return Ok(StageProgress::Transferring {
-                        written: self.inner.count as u64,
-                        total: payload.len(),
+                        progress: Progress {
+                            written: self.inner.count as u64,
+                            total: payload.len(),
+                        },
                     });
                 }
                 self.inner.poll_stage(payload)
@@ -481,7 +491,9 @@ mod tests {
         loop {
             match dev.poll_stage(&payload).expect("staging failed") {
                 StageProgress::Ready => break,
-                StageProgress::Transferring { written, .. } => {
+                StageProgress::Transferring {
+                    progress: Progress { written, .. },
+                } => {
                     if written > last_written {
                         last_written = written;
                         stalled_polls = 0;
@@ -559,9 +571,7 @@ mod tests {
                 self.offset
             };
             let len = PLDM_CHUNK.min(total - request);
-            payload
-                .read_at(request as u64, &mut self.staged[request..request + len])
-                .map_err(UpdateError::Payload)?;
+            payload.read_at(request as u64, &mut self.staged[request..request + len])?;
             if request == self.offset {
                 self.offset += len;
             }
@@ -569,8 +579,10 @@ mod tests {
                 self.verifying = true;
             }
             Ok(StageProgress::Transferring {
-                written: self.offset as u64,
-                total: total as u64,
+                progress: Progress {
+                    written: self.offset as u64,
+                    total: total as u64,
+                },
             })
         }
 
@@ -602,23 +614,29 @@ mod tests {
         assert_eq!(
             dev.poll_stage(&payload),
             Ok(StageProgress::Transferring {
-                written: chunk,
-                total
+                progress: Progress {
+                    written: chunk,
+                    total
+                }
             })
         );
         assert_eq!(
             dev.poll_stage(&payload),
             Ok(StageProgress::Transferring {
-                written: 2 * chunk,
-                total,
+                progress: Progress {
+                    written: 2 * chunk,
+                    total
+                }
             })
         );
         // The retransmit step pulls again but holds `written` still.
         assert_eq!(
             dev.poll_stage(&payload),
             Ok(StageProgress::Transferring {
-                written: 2 * chunk,
-                total,
+                progress: Progress {
+                    written: 2 * chunk,
+                    total
+                }
             })
         );
         // The short last chunk completes the transfer. Still not `Ready`:
@@ -626,8 +644,10 @@ mod tests {
         assert_eq!(
             dev.poll_stage(&payload),
             Ok(StageProgress::Transferring {
-                written: total,
-                total
+                progress: Progress {
+                    written: total,
+                    total
+                }
             })
         );
         // The verify step earns `Ready`.
@@ -708,8 +728,10 @@ mod tests {
                     Ok(StageProgress::Ready)
                 } else {
                     Ok(StageProgress::Transferring {
-                        written: self.count as u64,
-                        total: total as u64,
+                        progress: Progress {
+                            written: self.count as u64,
+                            total: total as u64,
+                        },
                     })
                 };
             }
@@ -718,15 +740,15 @@ mod tests {
                 self.slot[sector * FLASH_SECTOR..(sector + 1) * FLASH_SECTOR].fill(0xff);
                 self.erased[sector] = true;
                 return Ok(StageProgress::Transferring {
-                    written: self.count as u64,
-                    total: total as u64,
+                    progress: Progress {
+                        written: self.count as u64,
+                        total: total as u64,
+                    },
                 });
             }
             let end = (self.count + FLASH_PAGE).min(total);
             let mut page = vec![0; end - self.count];
-            payload
-                .read_at(self.count as u64, &mut page)
-                .map_err(UpdateError::Payload)?;
+            payload.read_at(self.count as u64, &mut page)?;
             self.slot[self.count..end].copy_from_slice(&page);
             if self.corrupt_next_write {
                 self.corrupt_next_write = false;
@@ -737,8 +759,10 @@ mod tests {
                 expected: page,
             });
             Ok(StageProgress::Transferring {
-                written: self.count as u64,
-                total: total as u64,
+                progress: Progress {
+                    written: self.count as u64,
+                    total: total as u64,
+                },
             })
         }
 
@@ -783,7 +807,9 @@ mod tests {
         for written in expected {
             assert_eq!(
                 dev.poll_stage(&payload),
-                Ok(StageProgress::Transferring { written, total })
+                Ok(StageProgress::Transferring {
+                    progress: Progress { written, total }
+                })
             );
         }
         // The final readback completes staging.

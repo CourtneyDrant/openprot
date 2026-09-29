@@ -7,10 +7,10 @@
 #![no_main]
 
 use ast10x0_peripherals::aperture::take_aperture;
-use ast10x0_peripherals::gpio::{gpioi, GpioExt, GpioRegisters, InterruptMode};
-use ast10x0_peripherals::scu::{pinctrl, ScuRegisters};
+use ast10x0_peripherals::create_pins;
+use ast10x0_peripherals::gpio::{GpioBlock, IntTrigger, IntoGpio, OutputPin};
+use ast10x0_peripherals::scu;
 use console_backend::console_backend_write_all;
-use embedded_hal::digital::{InputPin, OutputPin};
 use target_common::{declare_target, TargetInterface};
 use {console_backend as _, entry as _};
 
@@ -19,42 +19,38 @@ pub struct Target {}
 const GPIO_LEVEL_DELAY_CYCLES: u32 = 200_000_000;
 
 fn test_gpio_loopback() -> bool {
-    // The loopback requires a jumper between the fixture board's exposed
-    // GPIOI0/I2C2 SCL pin and GPIOI1/I2C2 SDA pin.
-    let gpioi = unsafe {
-        let scu = ScuRegisters::new_global_unlocked();
-        scu.apply_pinctrl_group(pinctrl::PINCTRL_GPIOI0);
-        scu.apply_pinctrl_group(pinctrl::PINCTRL_GPIOI1);
-        gpioi::GPIOI::new(GpioRegisters::new(take_aperture())).split()
-    };
+    // Jumper: GPIOH4/SCL1 <-> GPIOH5/SDA1 (J16 pins 1-4, rot-ast-ctrl); other teams swap to GPIOI0/I1 (scu418_0/scu418_1).
+    // SAFETY: created once at boot, exclusive SoC access; the pins! table is this chip's true pin map.
+    let pins = unsafe { create_pins() };
+    // SAFETY: kernel-only binary, minted once; no process holds a conflicting grant.
+    let gpio = GpioBlock::new(unsafe { take_aperture() });
+    let output = pins.scu414_28.into_gpio(&gpio);
+    let input = pins.scu414_29.into_gpio(&gpio);
+    scu::route(&(&output, &input));
     pw_log::info!("--- GPIOI loopback test ---");
 
-    let mut output = gpioi.pi0.into_push_pull_output();
-    let mut input = gpioi.pi1.into_pull_down_input();
+    let mut output = output.into_output();
+    let input = input.into_input();
 
     let interrupt_cases = [
-        ("level-high", InterruptMode::LevelHigh, false, true),
-        ("level-low", InterruptMode::LevelLow, true, false),
-        ("rising-edge", InterruptMode::EdgeRising, false, true),
-        ("falling-edge", InterruptMode::EdgeFalling, true, false),
-        ("both-edge rising", InterruptMode::EdgeBoth, false, true),
-        ("both-edge falling", InterruptMode::EdgeBoth, true, false),
+        ("level-high", IntTrigger::LevelHigh, false, true),
+        ("level-low", IntTrigger::LevelLow, true, false),
+        ("rising-edge", IntTrigger::Rising, false, true),
+        ("falling-edge", IntTrigger::Falling, true, false),
+        ("both-edge rising", IntTrigger::Both, false, true),
+        ("both-edge falling", IntTrigger::Both, true, false),
     ];
 
     for (name, mode, initial_high, trigger_high) in interrupt_cases {
         pw_log::info!("=== Testing GPIOI1 {} interrupt ===", name as &str);
 
-        input.set_interrupt_mode(InterruptMode::Disabled);
-        input.clear_interrupt();
+        input.disable_interrupt();
+        input.ack(input.map().int_status);
 
-        let initial_result = if initial_high {
-            output.set_high()
+        if initial_high {
+            let _ = output.set_high();
         } else {
-            output.set_low()
-        };
-        if initial_result.is_err() {
-            pw_log::error!("{}: GPIOI0 could not drive initial level", name as &str);
-            return false;
+            let _ = output.set_low();
         }
         let initial_level = if initial_high { "high" } else { "low" };
         pw_log::info!(
@@ -65,9 +61,9 @@ fn test_gpio_loopback() -> bool {
         cortex_m::asm::delay(GPIO_LEVEL_DELAY_CYCLES);
 
         let input_matches = if initial_high {
-            input.is_high().unwrap_or(false)
+            input.read(input.map().in_level)
         } else {
-            input.is_low().unwrap_or(false)
+            !input.read(input.map().in_level)
         };
         if !input_matches {
             pw_log::error!("{}: input and output GPIO level mismatch", name as &str);
@@ -79,23 +75,18 @@ fn test_gpio_loopback() -> bool {
             initial_level as &str
         );
 
-        input.clear_interrupt();
-        input.set_interrupt_mode(mode);
-        if input.get_interrupt_status() {
+        input.ack(input.map().int_status);
+        input.enable_interrupt(mode);
+        if input.read(input.map().int_status) {
             pw_log::error!("{}: interrupt pending before trigger", name as &str);
-            input.set_interrupt_mode(InterruptMode::Disabled);
+            input.disable_interrupt();
             return false;
         }
 
-        let trigger_result = if trigger_high {
-            output.set_high()
+        if trigger_high {
+            let _ = output.set_high();
         } else {
-            output.set_low()
-        };
-        if trigger_result.is_err() {
-            pw_log::error!("{}: GPIOI0 could not drive trigger level", name as &str);
-            input.set_interrupt_mode(InterruptMode::Disabled);
-            return false;
+            let _ = output.set_low();
         }
         let trigger_level = if trigger_high { "high" } else { "low" };
         pw_log::info!(
@@ -106,13 +97,13 @@ fn test_gpio_loopback() -> bool {
         cortex_m::asm::delay(GPIO_LEVEL_DELAY_CYCLES);
 
         let input_matches = if trigger_high {
-            input.is_high().unwrap_or(false)
+            input.read(input.map().in_level)
         } else {
-            input.is_low().unwrap_or(false)
+            !input.read(input.map().in_level)
         };
         if !input_matches {
             pw_log::error!("{}: input and output GPIO level mismatch", name as &str);
-            input.set_interrupt_mode(InterruptMode::Disabled);
+            input.disable_interrupt();
             return false;
         }
         pw_log::info!(
@@ -121,18 +112,18 @@ fn test_gpio_loopback() -> bool {
             trigger_level as &str
         );
 
-        if !input.get_interrupt_status() {
+        if !input.read(input.map().int_status) {
             pw_log::error!("{}: interrupt status was not set", name as &str);
-            input.set_interrupt_mode(InterruptMode::Disabled);
+            input.disable_interrupt();
             return false;
         }
         pw_log::info!("GPIOI1 {} interrupt status set", name as &str);
 
         // Disable level-sensitive modes before clearing so an active level
         // cannot immediately reassert the status bit.
-        input.set_interrupt_mode(InterruptMode::Disabled);
-        input.clear_interrupt();
-        if input.get_interrupt_status() {
+        input.disable_interrupt();
+        input.ack(input.map().int_status);
+        if input.read(input.map().int_status) {
             pw_log::error!("{}: interrupt status did not clear", name as &str);
             return false;
         }
@@ -143,7 +134,7 @@ fn test_gpio_loopback() -> bool {
 
 fn run_gpioi_loopback_test() -> bool {
     pw_log::info!("=== AST10x0 GPIOI loopback test ===");
-    // connect a jumper between the exposed GPIOI0/I2C2 SCL and GPIOI1/I2C2 SDA pins to verify the loopback.
+    // connect a jumper between GPIOH4/SCL1 and GPIOH5/SDA1 (or GPIOI0/I1 for other teams) to verify the loopback.
     test_gpio_loopback()
 }
 
